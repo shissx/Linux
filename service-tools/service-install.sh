@@ -157,7 +157,8 @@ echo "✅ 选择用户: $RUN_USER"
 echo -e "\n=== 选择运行组 ==="
 FIXED_GROUPS=("Users" "users" "root" "Administrators")
 for i in "${!FIXED_GROUPS[@]}"; do
-    mark=$((i == 0)) && mark="(默认)"
+    mark=""
+    if [ $i -eq 0 ]; then mark="(默认)"; fi
     echo "$((i+1)) ${FIXED_GROUPS[$i]} $mark"
 done
 while true; do
@@ -176,9 +177,7 @@ DEFAULT_PWD=$(pwd)
 read -p "工作目录 (默认: $DEFAULT_PWD): " WORK_DIR
 WORK_DIR=${WORK_DIR:-$DEFAULT_PWD}
 
-# 启动文件
-PYTHON_PATH=$(which python3)
-echo -e "\n✅ 检测到 Python: $PYTHON_PATH"
+# 启动文件（智能检测 shebang）
 while true; do
     read -p "启动文件 (如: app.py / wb.py): " START_FILE
     if [ -n "$START_FILE" ]; then break; fi
@@ -193,6 +192,17 @@ if [ ! -f "$START_FILE_FULL" ]; then
     echo "❌ 文件不存在"
     exit 1
 fi
+
+# 智能检测 Python 解释器
+SHEBANG=$(head -1 "$START_FILE_FULL" 2>/dev/null | grep '^#!' | sed 's/^#!//' | awk '{print $1}')
+if [ -n "$SHEBANG" ] && [ -x "$SHEBANG" ]; then
+    PYTHON_PATH="$SHEBANG"
+    echo -e "\n✅ 从脚本 shebang 检测到 Python: $PYTHON_PATH"
+else
+    PYTHON_PATH=$(which python3)
+    echo -e "\n✅ 使用系统 Python: $PYTHON_PATH"
+fi
+
 EXEC_PATH="$PYTHON_PATH $START_FILE_FULL"
 echo "✅ 执行路径：$EXEC_PATH"
 

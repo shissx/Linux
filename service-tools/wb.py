@@ -1,4 +1,4 @@
-# 首先安装：pip install flask
+#!/vol1/1000/shell/service-tools/venv/bin/python3
 
 from flask import Flask
 

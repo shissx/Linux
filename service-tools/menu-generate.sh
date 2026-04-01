@@ -8,23 +8,111 @@ BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
-# 收集信息
+# 配置变量 - 修改这里来改变筛选路径
+TARGET_PATH="/vol1/1000"
+
+# 清屏
+clear
+
 echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}   服务管理菜单生成器${NC}"
 echo -e "${GREEN}========================================${NC}"
-echo ""
+echo -e "筛选规则：仅工作目录在 ${RED}${TARGET_PATH}/*${NC} 下的服务\n"
 
-read -p "服务名称 (如: cc-website): " SERVICE_NAME
-read -p "菜单标题 (如: 选择题查重系统): " MENU_TITLE
-read -p "输出脚本文件名 (如: manage-cc.sh): " OUTPUT_FILE
+# 创建临时文件
+TMP_FILE=$(mktemp)
 
-# 校验必填项
-if [ -z "$SERVICE_NAME" ] || [ -z "$OUTPUT_FILE" ]; then
-    echo -e "${RED}错误: 服务名称和输出文件名不能为空${NC}"
-    exit 1
+echo -e "${BLUE}正在扫描服务...${NC}"
+
+# 批量获取服务信息（与 service-uninstall.sh 相同逻辑）
+sudo systemctl list-units --type=service --all --no-legend 2>/dev/null | \
+    awk '{print $1}' | \
+    grep -v '^$' | \
+    xargs -r -P 4 sudo systemctl show --property=Id,WorkingDirectory 2>/dev/null | \
+    awk -v target="$TARGET_PATH" -v RS='' '
+        $0 ~ "WorkingDirectory=" target "/" {
+            id = ""
+            workdir = ""
+            for(i=1;i<=NF;i++) {
+                if($i ~ /^Id=/) {
+                    split($i, a, "=")
+                    id = a[2]
+                }
+                if($i ~ /^WorkingDirectory=/) {
+                    split($i, a, "=")
+                    workdir = a[2]
+                }
+            }
+            if(id && workdir) {
+                print id "|" workdir
+            }
+        }
+    ' | sort -u > "$TMP_FILE"
+
+# 检查是否有服务
+if [ ! -s "$TMP_FILE" ]; then
+    echo -e "\n${RED}❌ 未找到符合条件的服务！${NC}"
+    echo -e "提示：服务的工作目录需要在 ${RED}${TARGET_PATH}/${NC} 下"
+    rm -f "$TMP_FILE"
+    exit 0
 fi
 
-# 生成管理菜单脚本（关键修复：去掉EOF的单引号，让变量正常解析）
+# 读取服务列表
+SERVICE_LIST=()
+while IFS='|' read -r service workdir; do
+    SERVICE_LIST+=("$service:$workdir")
+done < "$TMP_FILE"
+rm -f "$TMP_FILE"
+
+# 显示服务列表
+echo -e "\n${GREEN}✅ 找到以下可管理的服务：${NC}"
+echo "---------------------------------------------"
+for i in "${!SERVICE_LIST[@]}"; do
+    IFS=':' read -r service workdir <<< "${SERVICE_LIST[$i]}"
+    echo -e "$((i+1)) - ${GREEN}$service${NC} | 目录：${workdir}"
+done
+echo "---------------------------------------------"
+echo -e "0 - ${RED}退出${NC}\n"
+
+# 选择服务
+while true; do
+    read -p "请选择要管理的服务（序号/0）：" CHOICE
+    
+    if [[ "$CHOICE" == "0" ]]; then
+        echo -e "${GREEN}已退出${NC}"
+        exit 0
+    fi
+    
+    if [[ "$CHOICE" =~ ^[0-9]+$ ]]; then
+        idx=$((CHOICE-1))
+        if [[ $idx -ge 0 && $idx -lt ${#SERVICE_LIST[@]} ]]; then
+            IFS=':' read -r SERVICE_NAME workdir <<< "${SERVICE_LIST[$idx]}"
+            echo -e "\n${GREEN}✅ 已选择服务：${SERVICE_NAME}${NC}"
+            echo -e "工作目录：${workdir}\n"
+            break
+        fi
+    fi
+    
+    echo -e "${RED}❌ 输入无效，请重新选择！${NC}"
+done
+
+# 输入菜单标题和输出文件名
+read -p "菜单标题 (如: 选择题查重系统，可回车使用服务名): " MENU_TITLE
+if [ -z "$MENU_TITLE" ]; then
+    MENU_TITLE="${SERVICE_NAME%.service} 管理菜单"
+fi
+
+read -p "输出脚本文件名 (默认: manage-${SERVICE_NAME%.service}.sh): " OUTPUT_FILE
+if [ -z "$OUTPUT_FILE" ]; then
+    OUTPUT_FILE="manage-${SERVICE_NAME%.service}.sh"
+else
+    # 自动补齐 .sh 后缀（如果没有的话）
+    if [[ "$OUTPUT_FILE" != *.sh ]]; then
+        OUTPUT_FILE="${OUTPUT_FILE}.sh"
+    fi
+fi
+
+# 生成管理菜单脚本
 cat > "$OUTPUT_FILE" << EOF
 #!/bin/bash
 
@@ -38,7 +126,7 @@ NC='\033[0m'
 
 # 服务配置
 SERVICE_NAME="$SERVICE_NAME"
-MOUNT_PATH=\$(sudo systemctl cat \$SERVICE_NAME 2>/dev/null | grep RequiresMountsFor | cut -d= -f2)
+MOUNT_PATH=$(sudo systemctl cat \$SERVICE_NAME 2>/dev/null | grep RequiresMountsFor | cut -d= -f2)
 
 # 显示菜单
 show_menu() {
@@ -47,24 +135,17 @@ show_menu() {
     echo -e "\${GREEN}  $MENU_TITLE\${NC}"
     echo -e "\${CYAN}====================================\${NC}"
     echo ""
-    echo -e "\${YELLOW}【基础操作】\${NC}"
+    echo -e "\${YELLOW}【管理菜单】\${NC}"
     echo "1. 启动服务"
     echo "2. 停止服务"
     echo "3. 重启服务"
-    echo ""
-    echo -e "\${YELLOW}【状态监控】\${NC}"
     echo "4. 查看状态"
     echo "5. 查看日志"
-    echo ""
-    echo -e "\${YELLOW}【开机管理】\${NC}"
-    echo "6. 设置开机自启"
-    echo "7. 取消开机自启"
-    echo "8. 查看自启状态"
-    echo ""
-    echo -e "\${YELLOW}【可靠性保障】\${NC}"
-    echo "9. 查看挂载依赖"
-    echo "10. 查看重启策略"
-    echo ""
+    echo "6. 开机自启"
+    echo "7. 取消自启"
+    echo "8. 自启状态"
+    echo "9. 挂载依赖"
+    echo "10. 重启策略"
     echo -e "\${RED}0. 退出\${NC}"
     echo -e "\${CYAN}====================================\${NC}"
     echo ""
@@ -196,7 +277,7 @@ show_restart_policy() {
     echo ""
     
     # 获取当前PID
-    CURRENT_PID=\$(sudo systemctl show -p MainPID \$SERVICE_NAME 2>/dev/null | cut -d= -f2)
+    CURRENT_PID=$(sudo systemctl show -p MainPID \$SERVICE_NAME 2>/dev/null | cut -d= -f2)
     echo -e "\${YELLOW}【当前进程】\${NC}"
     echo "Main PID: \$CURRENT_PID"
     echo ""
@@ -212,7 +293,7 @@ show_restart_policy() {
     echo ""
     echo -e "\${YELLOW}【测试方法】\${NC}"
     echo "手动杀死进程测试自动重启:"
-    echo "sudo kill -9 \\\$(sudo systemctl show -p MainPID \$SERVICE_NAME | cut -d= -f2)"
+    echo "sudo kill -9 \$(sudo systemctl show -p MainPID \$SERVICE_NAME | cut -d= -f2)"
     echo "等待30秒后查看: sudo systemctl status \$SERVICE_NAME"
 }
 
@@ -245,13 +326,3 @@ while true; do
     read -p "按回车键继续..."
 done
 EOF
-
-# 添加执行权限
-chmod +x "$OUTPUT_FILE"
-
-echo ""
-echo -e "${GREEN}========================================${NC}"
-echo -e "${GREEN}✅ 管理菜单生成成功！${NC}"
-echo -e "${GREEN}文件: $OUTPUT_FILE${NC}"
-echo -e "${GREEN}运行: ./$OUTPUT_FILE${NC}"
-echo -e "${GREEN}========================================${NC}"
