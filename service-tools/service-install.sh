@@ -105,6 +105,7 @@ WantedBy=multi-user.target
 EOF
 
     sudo systemctl daemon-reload
+    sudo systemctl enable "$SERVICE_NAME"
     sudo systemctl start "$SERVICE_NAME"
     sleep 1
     STATUS=$(sudo systemctl is-active "$SERVICE_NAME")
@@ -304,6 +305,7 @@ EOF
 fi
 
 sudo systemctl daemon-reload
+    sudo systemctl enable "$SERVICE_NAME"
 sudo systemctl start "$SERVICE_NAME"
 sleep 1
 STATUS=$(sudo systemctl is-active "$SERVICE_NAME")

@@ -126,7 +126,7 @@ NC='\033[0m'
 
 # 服务配置
 SERVICE_NAME="$SERVICE_NAME"
-MOUNT_PATH=$(sudo systemctl cat \$SERVICE_NAME 2>/dev/null | grep RequiresMountsFor | cut -d= -f2)
+MOUNT_PATH=$(sudo systemctl cat "$SERVICE_NAME" 2>/dev/null | grep -oP 'RequiresMountsFor=\K.*' | xargs)
 
 # 显示菜单
 show_menu() {
@@ -235,35 +235,29 @@ show_autostart_status() {
 
 # 9. 查看挂载依赖
 show_mount_dependency() {
-    echo -e "\${BLUE}=== 挂载依赖检查 ===\${NC}"
+    echo -e "${BLUE}=== 挂载依赖检查 ===${NC}"
     echo ""
     
     # 查看配置
-    echo -e "\${YELLOW}【配置】\${NC}"
-    sudo systemctl cat \$SERVICE_NAME 2>/dev/null | grep -E "RequiresMountsFor|After" || echo "未配置挂载依赖"
+    echo -e "${YELLOW}【配置】${NC}"
+    sudo systemctl cat $SERVICE_NAME 2>/dev/null | grep -E "RequiresMountsFor|After" || echo "未配置挂载依赖"
     echo ""
     
     # 检查目录
-    if [ -n "\$MOUNT_PATH" ]; then
-        echo -e "\${YELLOW}【当前挂载状态】\${NC}"
-        if [ -d "\$MOUNT_PATH" ]; then
-            echo -e "\${GREEN}✅ 目录已挂载: \$MOUNT_PATH\${NC}"
-            ls -ld "\$MOUNT_PATH"
+    if [ -n "$MOUNT_PATH" ]; then
+        echo -e "${YELLOW}【挂载状态】${NC}"
+        if [ -d "$MOUNT_PATH" ]; then
+            echo -e "${GREEN}✅ $MOUNT_PATH 已挂载${NC}"
         else
-            echo -e "\${RED}❌ 目录未挂载: \$MOUNT_PATH\${NC}"
+            echo -e "${RED}❌ $MOUNT_PATH 未挂载${NC}"
         fi
         echo ""
     fi
-    
-    # 查看启动顺序
-    echo -e "\${YELLOW}【启动顺序】\${NC}"
-    systemd-analyze critical-chain \$SERVICE_NAME.service 2>/dev/null | head -10 || echo "无法获取启动顺序"
-    echo ""
-    
-    echo -e "\${YELLOW}【说明】\${NC}"
-    echo "- RequiresMountsFor: systemd自动等待目录挂载"
-    echo "- 目录未挂载时，服务不会启动"
-    echo "- 挂载完成后自动启动服务"
+        
+    echo -e "${YELLOW}【说明】${NC}"
+    echo "After: 服务在该目标之后启动"
+    echo "RequiresMountsFor: 服务启动前必须挂载的目录"
+
 }
 
 # 10. 查看重启策略
@@ -272,29 +266,84 @@ show_restart_policy() {
     echo ""
     
     # 查看配置
-    echo -e "\${YELLOW}【配置】\${NC}"
-    sudo systemctl cat \$SERVICE_NAME 2>/dev/null | grep -E "Restart|RestartSec" || echo "未找到重启配置"
+    echo -e "\${YELLOW}【重启配置】\${NC}"
+    RESTART_CONFIG=\$(sudo grep -E "Restart|RestartSec" /etc/systemd/system/\$SERVICE_NAME 2>/dev/null)
+    if [ -n "\$RESTART_CONFIG" ]; then
+        echo "\$RESTART_CONFIG"
+        RESTART_SEC=\$(echo "\$RESTART_CONFIG" | grep "RestartSec=" | cut -d= -f2)
+        [ -z "\$RESTART_SEC" ] && RESTART_SEC=2
+    else
+        echo "未配置重启策略（使用 systemd 默认: Restart=no）"
+        RESTART_SEC=2
+    fi
     echo ""
     
-    # 获取当前PID
-    CURRENT_PID=$(sudo systemctl show -p MainPID \$SERVICE_NAME 2>/dev/null | cut -d= -f2)
-    echo -e "\${YELLOW}【当前进程】\${NC}"
-    echo "Main PID: \$CURRENT_PID"
+    # 配置说明
+    echo -e "\${YELLOW}【配置说明】\${NC}"
+    echo "Restart    : 服务重启策略（on-failure = 异常退出时自动重启）"
+    echo "RestartSec : 退出后等待 \${RESTART_SEC}秒 再启动"
     echo ""
     
-    # 查看重启记录
-    echo -e "\${YELLOW}【最近重启记录】\${NC}"
-    sudo journalctl -u \$SERVICE_NAME --since "1 hour ago" --grep="Started\|Stopped\|restart" --no-pager | tail -5 || echo "无重启记录"
+    # 当前状态
+    ACTIVE_STATE=\$(sudo systemctl is-active \$SERVICE_NAME 2>/dev/null)
+    CURRENT_PID=\$(sudo systemctl show \$SERVICE_NAME --property=MainPID --value 2>/dev/null)
+    
+    if [ "\$ACTIVE_STATE" = "active" ]; then
+        echo -e "\${YELLOW}【当前进程】\${NC}"
+        echo "服务运行中，PID: \$CURRENT_PID"
+        echo ""
+        
+        echo -e "\${YELLOW}【测试自动重启】\${NC}"
+        read -p "是否模拟进程崩溃测试自动重启？(y/n): " test_choice
+        
+        if [[ "\$test_choice" == "y" || "\$test_choice" == "Y" ]]; then
+            echo ""
+            echo -e "\${BLUE}→ 正在杀死进程 PID: \$CURRENT_PID ...\${NC}"
+            
+            if sudo kill -9 \$CURRENT_PID 2>/dev/null; then
+                echo -e "\${GREEN}✅ 进程已杀死\${NC}"
+            else
+                echo -e "\${RED}❌ 杀死进程失败\${NC}"
+                return
+            fi
+            
+            echo ""
+            echo -e "\${YELLOW}→ 等待 \${RESTART_SEC}秒 让 systemd 尝试重启...\${NC}"
+            for i in \$(seq 1 \$RESTART_SEC); do
+                echo -ne "  等待 \${i}/\${RESTART_SEC} 秒...\r"
+                sleep 1
+            done
+            echo ""
+            echo ""
+            
+            echo -e "\${BLUE}→ 检查服务状态...\${NC}"
+            sleep 1
+            NEW_PID=\$(sudo systemctl show \$SERVICE_NAME --property=MainPID --value 2>/dev/null)
+            NEW_STATE=\$(sudo systemctl is-active \$SERVICE_NAME 2>/dev/null)
+            
+            echo ""
+            if [ "\$NEW_STATE" = "active" ]; then
+                if [ "\$NEW_PID" != "\$CURRENT_PID" ] && [ "\$NEW_PID" != "0" ]; then
+                    echo -e "\${GREEN}✅ 自动重启成功！新 PID: \$NEW_PID\${NC}"
+                else
+                    echo -e "\${GREEN}✅ 服务已恢复运行\${NC}"
+                fi
+            else
+                echo -e "\${RED}❌ 服务未自动重启，当前状态: \$NEW_STATE\${NC}"
+            fi
+            echo ""
+        fi
+    else
+        echo -e "\${YELLOW}【服务状态】\${NC}"
+        echo "服务未运行"
+    fi
     echo ""
     
-    echo -e "\${YELLOW}【说明】\${NC}"
-    echo "- Restart=always: 进程意外退出时自动重启"
-    echo "- RestartSec=30: 退出后等待30秒再启动"
-    echo ""
-    echo -e "\${YELLOW}【测试方法】\${NC}"
-    echo "手动杀死进程测试自动重启:"
-    echo "sudo kill -9 \$(sudo systemctl show -p MainPID \$SERVICE_NAME | cut -d= -f2)"
-    echo "等待30秒后查看: sudo systemctl status \$SERVICE_NAME"
+    echo -e "\${YELLOW}【手动管理命令】\${NC}"
+    echo "启动: sudo systemctl start \$SERVICE_NAME"
+    echo "停止: sudo systemctl stop \$SERVICE_NAME"
+    echo "重启: sudo systemctl restart \$SERVICE_NAME"
+    echo "状态: sudo systemctl status \$SERVICE_NAME"
 }
 
 # 主循环
